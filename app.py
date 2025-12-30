@@ -109,19 +109,32 @@ def ensure_paragraph_runs(p):
     return p.runs
 
 
-def obtener_dt_elaboracion(data: dict):
+def obtener_dt_elaboracion(data: dict, prefer_keys=None):
     """
-    Obtiene datetime desde data['fechaHora'] (formato ISO de input datetime-local),
-    tanto para RP como RC, sin tocar el front.
+    Obtiene datetime desde distintos campos (soporta RP y RC).
+    - Para RC: preferir fechaHoraRC / fechaElaboracionRC
+    - Para RP: fechaHora
+    Acepta formatos:
+      - datetime-local: YYYY-MM-DDTHH:MM
+      - ISO con 'Z'
+      - date: YYYY-MM-DD
     """
-    fh = (data.get("fechaHora") or "").strip()
-    if not fh:
-        return None
-    try:
-        # formato típico: 2025-12-11T10:20
-        return datetime.fromisoformat(fh)
-    except Exception:
-        return None
+    keys = prefer_keys or ["fechaHoraRC", "fechaElaboracionRC", "fechaHora"]
+    for k in keys:
+        fh = (data.get(k) or "").strip()
+        if not fh:
+            continue
+        try:
+            # Solo fecha
+            if len(fh) == 10 and fh[4] == "-" and fh[7] == "-":
+                return datetime.strptime(fh, "%Y-%m-%d")
+            # ISO con Z
+            if fh.endswith("Z"):
+                fh = fh[:-1] + "+00:00"
+            return datetime.fromisoformat(fh)
+        except Exception:
+            continue
+    return None
 
 
 def formatear_fecha_ddmmyyyy(fecha_iso: str):
@@ -271,7 +284,7 @@ def generar_word_rp():
     run_t.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
 
     # 2) FECHA DE ELABORACIÓN
-    dt = obtener_dt_elaboracion(data)
+    dt = obtener_dt_elaboracion(data, ["fechaHora"]) 
     if dt:
         fecha_texto = dt.strftime("%d/%m/%Y %H:%M")
         fecha_archivo = dt.strftime("%d%m%Y")
@@ -448,7 +461,7 @@ def generar_word_rc():
     run_t.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
 
     # Fecha de elaboración
-    dt = obtener_dt_elaboracion(data)
+    dt = obtener_dt_elaboracion(data, ["fechaHoraRC", "fechaElaboracionRC", "fechaHora"]) 
     if dt:
         fecha_texto = dt.strftime("%d/%m/%Y %H:%M")
         fecha_archivo = dt.strftime("%d%m%Y")
