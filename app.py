@@ -63,35 +63,54 @@ def add_section_title(doc: Document, text: str):
 
 
 def configurar_cabeceras(doc: Document):
-    """Inserta cabecera 1 en primera página y cabecera 2 en el resto."""
+    """Inserta cabecera COE MIDIS en el Word (primera página y resto)."""
     section = doc.sections[0]
     section.different_first_page_header_footer = True
 
-    # Cabecera primera página
-    first_header = section.first_page_header
-    p1 = first_header.paragraphs[0]
-    r1 = p1.add_run()
+    # Reserva espacio para una cabecera alta (evita que se monte con el contenido).
     try:
-        r1.add_picture("cabecera_coe_1.png", width=Inches(6.5))
+        section.header_distance = Cm(0.4)
+        section.top_margin = Cm(6.2)
     except Exception:
-        try:
-            r1.add_picture("cabecera_coe_1.jpg", width=Inches(6.5))
-        except Exception:
-            pass
-    p1.alignment = 1  # centrado
+        pass
 
-    # Cabecera resto de páginas
-    header_rest = section.header
-    p2 = header_rest.paragraphs[0]
-    r2 = p2.add_run()
-    try:
-        r2.add_picture("cabecera_coe_2.png", width=Inches(6.5))
-    except Exception:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _try_add(pic_run, fname: str) -> bool:
+        path = os.path.join(base_dir, fname)
+        if not os.path.exists(path):
+            return False
         try:
-            r2.add_picture("cabecera_coe_2.jpg", width=Inches(6.5))
+            available_width = section.page_width - section.left_margin - section.right_margin
+            pic_run.add_picture(path, width=available_width)
+            return True
+        except Exception:
+            try:
+                pic_run.add_picture(path, width=Inches(6.5))
+                return True
+            except Exception:
+                return False
+
+    def _ensure_para(hdr):
+        p = hdr.paragraphs[0] if hdr.paragraphs else hdr.add_paragraph()
+        p.alignment = 1  # centrado
+        try:
+            p.paragraph_format.space_before = 0
+            p.paragraph_format.space_after = 0
         except Exception:
             pass
-    p2.alignment = 1
+        return p
+
+    # Primera página: cabecera_coe_1.*
+    p1 = _ensure_para(section.first_page_header)
+    r1 = p1.add_run()
+    _try_add(r1, "cabecera_coe_1.png") or _try_add(r1, "cabecera_coe_1.jpg")
+
+    # Resto de páginas: cabecera_coe_2.* (si no existe, reutiliza cabecera_coe_1.*)
+    p2 = _ensure_para(section.header)
+    r2 = p2.add_run()
+    if not (_try_add(r2, "cabecera_coe_2.png") or _try_add(r2, "cabecera_coe_2.jpg")):
+        _try_add(r2, "cabecera_coe_1.png") or _try_add(r2, "cabecera_coe_1.jpg")
 
 
 def set_paragraph_single_spacing(p):
