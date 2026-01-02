@@ -15,14 +15,20 @@ from datetime import datetime  # Manejo de fechas
 app = Flask(__name__)
 
 # --- Health check (Render / monitoring) ---
-@app.route("/health", methods=["GET"])
+
+from flask import jsonify
+
+@app.get("/health")
 def health():
     return jsonify(ok=True)
 
-@app.route("/", methods=["GET"])
+@app.get("/")
 def root():
-    return jsonify(ok=True, service="coe-word-service")
-CORS(app)
+    return jsonify(service="coe-word-service", ok=True)
+
+
+
+
 
 
 # ============================================================
