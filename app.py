@@ -13,6 +13,15 @@ from PIL import Image
 from datetime import datetime  # Manejo de fechas
 
 app = Flask(__name__)
+
+# --- Health check (Render / monitoring) ---
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify(ok=True)
+
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify(ok=True, service="coe-word-service")
 CORS(app)
 
 
