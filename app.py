@@ -11,23 +11,9 @@ from io import BytesIO
 from staticmap import StaticMap, CircleMarker
 from PIL import Image
 from datetime import datetime  # Manejo de fechas
-import os
-
-DOC_SERVICE_KEY = (os.environ.get("DOC_SERVICE_KEY") or "").strip()
-
-def _check_api_key():
-    # Si DOC_SERVICE_KEY está definido, exige X-API-KEY correcto.
-    if not DOC_SERVICE_KEY:
-        return True
-    return (request.headers.get("X-API-KEY") or "").strip() == DOC_SERVICE_KEY
-
 
 app = Flask(__name__)
 CORS(app)
-
-@app.get("/health")
-def health():
-    return jsonify({"ok": True})
 
 
 # ============================================================
@@ -63,54 +49,63 @@ def add_section_title(doc: Document, text: str):
 
 
 def configurar_cabeceras(doc: Document):
-    """Inserta cabecera COE MIDIS en el Word (primera página y resto)."""
-    section = doc.sections[0]
-    section.different_first_page_header_footer = True
+    """Inserta la cabecera COE en TODAS las páginas (RP/RC)."""
+    for section in doc.sections:
+        # Misma cabecera en primera y siguientes páginas
+        section.different_first_page_header_footer = False
 
-    # Reserva espacio para una cabecera alta (evita que se monte con el contenido).
-    try:
-        section.header_distance = Cm(0.4)
-        section.top_margin = Cm(6.2)
-    except Exception:
-        pass
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    def _try_add(pic_run, fname: str) -> bool:
-        path = os.path.join(base_dir, fname)
-        if not os.path.exists(path):
-            return False
+        # Asegura que el contenido no se monte con una cabecera alta (ajuste conservador)
         try:
-            available_width = section.page_width - section.left_margin - section.right_margin
-            pic_run.add_picture(path, width=available_width)
-            return True
-        except Exception:
-            try:
-                pic_run.add_picture(path, width=Inches(6.5))
-                return True
-            except Exception:
-                return False
-
-    def _ensure_para(hdr):
-        p = hdr.paragraphs[0] if hdr.paragraphs else hdr.add_paragraph()
-        p.alignment = 1  # centrado
-        try:
-            p.paragraph_format.space_before = 0
-            p.paragraph_format.space_after = 0
+            if section.top_margin < Cm(3.2):
+                section.top_margin = Cm(3.2)
         except Exception:
             pass
-        return p
 
-    # Primera página: cabecera_coe_1.*
-    p1 = _ensure_para(section.first_page_header)
-    r1 = p1.add_run()
-    _try_add(r1, "cabecera_coe_1.png") or _try_add(r1, "cabecera_coe_1.jpg")
+        # Ancho exacto del área útil (página - márgenes)
+        try:
+            header_width = section.page_width - section.left_margin - section.right_margin
+        except Exception:
+            header_width = Inches(6.5)
 
-    # Resto de páginas: cabecera_coe_2.* (si no existe, reutiliza cabecera_coe_1.*)
-    p2 = _ensure_para(section.header)
-    r2 = p2.add_run()
-    if not (_try_add(r2, "cabecera_coe_2.png") or _try_add(r2, "cabecera_coe_2.jpg")):
-        _try_add(r2, "cabecera_coe_1.png") or _try_add(r2, "cabecera_coe_1.jpg")
+        def _set_header(hdr):
+            try:
+                hdr.is_linked_to_previous = False
+            except Exception:
+                pass
+
+            # deja un solo párrafo en cabecera
+            if hdr.paragraphs:
+                p = hdr.paragraphs[0]
+                for extra in hdr.paragraphs[1:]:
+                    try:
+                        extra._element.getparent().remove(extra._element)
+                    except Exception:
+                        pass
+                p.text = ""
+            else:
+                p = hdr.add_paragraph()
+
+            p.alignment = 1  # centrado
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+
+            run = p.add_run()
+            # intenta PNG, luego JPG
+            try:
+                run.add_picture("cabecera_coe_1.png", width=header_width)
+            except Exception:
+                try:
+                    run.add_picture("cabecera_coe_1.jpg", width=header_width)
+                except Exception:
+                    pass
+
+        _set_header(section.header)
+        # por compatibilidad, también setea first_page_header (aunque esté desactivado)
+        try:
+            _set_header(section.first_page_header)
+        except Exception:
+            pass
 
 
 def set_paragraph_single_spacing(p):
@@ -128,33 +123,27 @@ def ensure_paragraph_runs(p):
     return p.runs
 
 
-def obtener_dt_elaboracion(data: dict, prefer_keys=None):
+def obtener_dt_elaboracion(data: dict):
     """
-    Obtiene datetime desde distintos campos (soporta RP y RC).
-    - Para RC: preferir fechaHoraRC / fechaElaboracionRC
-    - Para RP: fechaHora
-    Acepta formatos:
-      - datetime-local: YYYY-MM-DDTHH:MM
-      - ISO con 'Z'
-      - date: YYYY-MM-DD
+    Obtiene datetime desde el payload. Soporta varias llaves (RP/RC) y formatos típicos.
+    Preferencia: fechaHoraRC / fechaElaboracionRC / fechaElaboracion / fechaHora / fechaRegistro
     """
-    keys = prefer_keys or ["fechaHoraRC", "fechaElaboracionRC", "fechaHora"]
-    for k in keys:
-        fh = (data.get(k) or "").strip()
+    for key in ("fechaHoraRC", "fechaElaboracionRC", "fechaElaboracion", "fechaHora", "fechaRegistro"):
+        fh = str(data.get(key, "") or "").strip()
         if not fh:
             continue
+        # normaliza ISO con Z
+        if fh.endswith("Z"):
+            fh = fh[:-1]
         try:
-            # Solo fecha
-            if len(fh) == 10 and fh[4] == "-" and fh[7] == "-":
-                return datetime.strptime(fh, "%Y-%m-%d")
-            # ISO con Z
-            if fh.endswith("Z"):
-                fh = fh[:-1] + "+00:00"
             return datetime.fromisoformat(fh)
         except Exception:
-            continue
+            # intento simple: "YYYY-MM-DD HH:MM"
+            try:
+                return datetime.strptime(fh, "%Y-%m-%d %H:%M")
+            except Exception:
+                pass
     return None
-
 
 def formatear_fecha_ddmmyyyy(fecha_iso: str):
     """Convierte 'YYYY-MM-DD' → 'DD-MM-YYYY'. Si falla, devuelve la original."""
@@ -273,9 +262,6 @@ def insertar_tabla_ubicacion_y_mapa(doc: Document, data: dict):
 
 @app.route("/api/generar-word-rp", methods=["POST"])
 def generar_word_rp():
-    if not _check_api_key():
-        return jsonify({"error": "forbidden"}), 403
-
     data = request.get_json()
     if not data:
         return jsonify({"error": "Sin datos"}), 400
@@ -303,7 +289,7 @@ def generar_word_rp():
     run_t.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
 
     # 2) FECHA DE ELABORACIÓN
-    dt = obtener_dt_elaboracion(data, ["fechaHora"]) 
+    dt = obtener_dt_elaboracion(data)
     if dt:
         fecha_texto = dt.strftime("%d/%m/%Y %H:%M")
         fecha_archivo = dt.strftime("%d%m%Y")
@@ -450,9 +436,6 @@ def generar_word_rp():
 
 @app.route("/api/generar-word-rc", methods=["POST"])
 def generar_word_rc():
-    if not _check_api_key():
-        return jsonify({"error": "forbidden"}), 403
-
     data = request.get_json()
     if not data:
         return jsonify({"error": "Sin datos"}), 400
@@ -480,7 +463,7 @@ def generar_word_rc():
     run_t.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
 
     # Fecha de elaboración
-    dt = obtener_dt_elaboracion(data, ["fechaHoraRC", "fechaElaboracionRC", "fechaHora"]) 
+    dt = obtener_dt_elaboracion(data)
     if dt:
         fecha_texto = dt.strftime("%d/%m/%Y %H:%M")
         fecha_archivo = dt.strftime("%d%m%Y")
@@ -641,5 +624,4 @@ def generar_word_rc():
 # ============================================================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True)
