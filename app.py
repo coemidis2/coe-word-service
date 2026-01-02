@@ -7,6 +7,10 @@ from docx.oxml.ns import qn
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_LINE_SPACING
 from io import BytesIO
+import socket
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+
 
 from staticmap import StaticMap, CircleMarker
 from PIL import Image
@@ -131,6 +135,25 @@ def set_paragraph_single_spacing(p):
     pf.line_spacing_rule = WD_LINE_SPACING.SINGLE
 
 
+
+@contextmanager
+def _socket_timeout(seconds: float):
+    """Aplica un timeout por defecto a sockets (útil para teselas OSM)."""
+    old = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(old)
+
+
+def _render_static_map(lat_f: float, lon_f: float, zoom: int):
+    """Renderiza un mapa estático (puede fallar/colgar si no hay teselas)."""
+    m = StaticMap(800, 600, url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+    marker = CircleMarker((lon_f, lat_f), "#d50000", 12)
+    m.add_marker(marker)
+    return m.render(zoom=zoom)
+
 def ensure_paragraph_runs(p):
     """Asegura que el párrafo tenga al menos un run."""
     if not p.runs:
@@ -248,15 +271,24 @@ def insertar_tabla_ubicacion_y_mapa(doc: Document, data: dict):
         zoom = 13
 
     try:
-        m = StaticMap(800, 600, url_template="https://tile.openstreetmap.org/{z}/{x}/{y}.png")
-        marker = CircleMarker((lon_f, lat_f), "#d50000", 12)
-        m.add_marker(marker)
+        # Render de mapa: proteger contra demoras (teselas OSM / red)
+        img = None
+        # 1) timeout de sockets (por si la librería se queda esperando)
+        with _socket_timeout(2.8):
+            # 2) además, ejecutar en hilo y cortar a los ~3s
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_render_static_map, lat_f, lon_f, zoom)
+                try:
+                    img = fut.result(timeout=3.0)
+                except FuturesTimeoutError:
+                    img = None
 
-        img = m.render(zoom=zoom)
+        if img is None:
+            raise TimeoutError("timeout mapa")
+
         stream = BytesIO()
         img.save(stream, format="PNG")
         stream.seek(0)
-
         p_map = doc.add_paragraph()
         run_map = p_map.add_run()
         run_map.add_picture(stream, width=Cm(12), height=Cm(8))
